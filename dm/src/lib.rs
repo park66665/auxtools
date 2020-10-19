@@ -8,6 +8,7 @@ use std::ffi::c_void;
 use value::Value;
 
 pub mod byond_ffi;
+pub mod compiler;
 pub mod context;
 pub mod hooks;
 pub mod list;
@@ -16,6 +17,9 @@ pub mod raw_types;
 pub mod runtime;
 pub mod string;
 pub mod value;
+pub mod vm;
+
+use vm::vm as vmhook;
 
 extern crate inventory;
 
@@ -180,7 +184,27 @@ byond_ffi_fn! { auxtools_init(_input) {
 		}
 	}
 
-	Some("SUCCESS".to_owned())
+
+	hooks::hook_by_id_with_bytecode_dont_use_this(proc::get_proc("/proc/do_sum").unwrap().id,
+	vec![
+		vmhook::Opcode::LOAD_ARGUMENT as u8,
+		0,
+		0,
+		vmhook::Opcode::LOAD_ARGUMENT as u8,
+		1,
+		1,
+		vmhook::Opcode::ADD as u8,
+		0,
+		1,
+		2,
+		vmhook::Opcode::RETURN as u8,
+		2,
+		vmhook::Opcode::HALT as u8,
+	]);
+
+	Some(compiler::whatever())
+
+	//Some("SUCCESS".to_owned())
 } }
 
 #[hook("/proc/react")]
@@ -193,7 +217,6 @@ fn hello_proc_hook(some_datum: Value) {
 
 	Ok(l.into())
 }
-
 /*
 #[hook("/datum/getvartest/proc/hookme")]
 fn datum_proc_hook_test() {

@@ -43,38 +43,43 @@ fn strip_path(p: String) -> String {
 	p.replace("/proc/", "/").replace("/verb/", "/")
 }
 
+pub fn get_proc_by_id(id: u32) -> Option<Proc> {
+	let mut proc_entry: *mut ProcEntry = std::ptr::null_mut();
+	unsafe {
+		assert_eq!(
+			raw_types::funcs::get_proc_array_entry(&mut proc_entry, ProcId(id)),
+			1
+		);
+	}
+	if proc_entry.is_null() {
+		return None;
+	}
+	let proc_name = strip_path(unsafe { StringRef::from_id((*proc_entry).path.0).into() });
+	Some(Proc {
+		id: ProcId(id),
+		entry: proc_entry,
+		path: proc_name,
+	})
+}
+
 fn populate_procs() {
 	let mut i: u32 = 0;
 	loop {
-		let mut proc_entry: *mut ProcEntry = std::ptr::null_mut();
-		unsafe {
-			assert_eq!(
-				raw_types::funcs::get_proc_array_entry(&mut proc_entry, ProcId(i)),
-				1
-			);
-		}
-		if proc_entry.is_null() {
+		if let Some(proc) = get_proc_by_id(i) {
+			PROCS_BY_NAME.with(|h| {
+				match h.borrow_mut().entry(proc.path.clone()) {
+					Entry::Occupied(o) => {
+						o.into_mut().push(proc);
+					}
+					Entry::Vacant(v) => {
+						v.insert(vec![proc]);
+					}
+				};
+			});
+			i += 1;
+		} else {
 			break;
 		}
-		let proc_name = strip_path(unsafe { StringRef::from_id((*proc_entry).path.0).into() });
-		let proc = Proc {
-			id: ProcId(i),
-			entry: proc_entry,
-			path: proc_name.clone(),
-		};
-
-		PROCS_BY_NAME.with(|h| {
-			match h.borrow_mut().entry(proc_name) {
-				Entry::Occupied(o) => {
-					o.into_mut().push(proc);
-				}
-				Entry::Vacant(v) => {
-					v.insert(vec![proc]);
-				}
-			};
-		});
-
-		i += 1;
 	}
 }
 

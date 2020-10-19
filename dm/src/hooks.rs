@@ -10,6 +10,8 @@ use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::sync::Once;
 
+use crate::vm::vm as vmhook;
+
 pub struct CompileTimeHook {
 	pub proc_path: &'static str,
 	pub hook: ProcHook,
@@ -89,8 +91,13 @@ pub fn init() -> Result<(), String> {
 pub type ProcHook =
 	for<'a, 'r> fn(&'a DMContext<'r>, Value<'a>, Value<'a>, &mut Vec<Value<'a>>) -> DMResult<'a>;
 
+enum HookType {
+	Rust(ProcHook),
+	VM,
+}
 thread_local! {
-	static PROC_HOOKS: RefCell<HashMap<raw_types::procs::ProcId, ProcHook>> = RefCell::new(HashMap::new());
+	static PROC_HOOKS: RefCell<HashMap<raw_types::procs::ProcId, HookType>> = RefCell::new(HashMap::new());
+	static HOOK_VM: RefCell<vmhook::VM> = RefCell::new(vmhook::VM::new());
 }
 
 static PROC_HOOKS_INIT: Once = Once::new();
@@ -105,12 +112,33 @@ fn hook_by_id(id: raw_types::procs::ProcId, hook: ProcHook) -> Result<(), HookFa
 		let mut map = h.borrow_mut();
 		match map.entry(id) {
 			Entry::Vacant(v) => {
-				v.insert(hook);
+				v.insert(HookType::Rust(hook));
 				Ok(())
 			}
 			Entry::Occupied(_) => Err(HookFailure::AlreadyHooked),
 		}
 	})
+}
+
+pub fn hook_by_id_with_bytecode_dont_use_this(id: raw_types::procs::ProcId, hook: Vec<u8>) {
+	PROC_HOOKS_INIT.call_once(|| {
+		if let Err(e) = init() {
+			panic!(e);
+		}
+	});
+	PROC_HOOKS.with(|h| {
+		let mut map = h.borrow_mut();
+		match map.entry(id) {
+			Entry::Vacant(v) => {
+				v.insert(HookType::VM);
+				HOOK_VM.with(|vm| {
+					vm.borrow_mut().add_program(id.0, hook);
+				});
+				Ok(())
+			}
+			Entry::Occupied(_) => Err(HookFailure::AlreadyHooked),
+		}
+	});
 }
 
 pub fn hook<S: Into<String>>(name: S, hook: ProcHook) -> Result<(), HookFailure> {
@@ -158,7 +186,28 @@ extern "C" fn call_proc_by_id_hook(
 					.collect();
 			}
 
-			let result = hook(&ctx, src, usr, &mut args);
+			let result = match hook {
+				HookType::Rust(func) => func(&ctx, src, usr, &mut args),
+				HookType::VM => {
+					let register_args = args
+						.iter()
+						.map(|a| vmhook::Register {
+							tag: a.value.tag as u32,
+							value: unsafe { a.value.data.id },
+						})
+						.collect();
+
+					HOOK_VM.with(|vm| {
+						let ret = vm.borrow_mut().run_program(proc_id.0, register_args);
+						Ok(unsafe {
+							Value::from_raw(raw_types::values::Value {
+								tag: std::mem::transmute(ret.tag as u8),
+								data: std::mem::transmute(ret.value),
+							})
+						})
+					})
+				}
+			};
 
 			match result {
 				Ok(r) => {
